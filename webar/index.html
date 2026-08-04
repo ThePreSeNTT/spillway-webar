@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0, user-scalable=no"
+  />
+
+  <title>工程AR查看</title>
+
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      font-family: Arial, "Microsoft YaHei", sans-serif;
+      background: #000;
+    }
+
+    #ar-container {
+      position: fixed;
+      inset: 0;
+      overflow: hidden;
+    }
+
+    #controls {
+      position: fixed;
+      left: 12px;
+      right: 12px;
+      bottom: 20px;
+      z-index: 20;
+
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: center;
+    }
+
+    button {
+      min-width: 90px;
+      padding: 11px 14px;
+      border: none;
+      border-radius: 8px;
+      font-size: 15px;
+      background: rgba(255, 255, 255, 0.9);
+    }
+
+    #status {
+      position: fixed;
+      top: 15px;
+      left: 50%;
+      z-index: 20;
+      transform: translateX(-50%);
+
+      padding: 8px 14px;
+      border-radius: 8px;
+      color: #fff;
+      background: rgba(0, 0, 0, 0.65);
+      font-size: 14px;
+      text-align: center;
+    }
+
+    #opacity-panel {
+      position: fixed;
+      left: 15px;
+      right: 15px;
+      top: 60px;
+      z-index: 20;
+
+      display: flex;
+      align-items: center;
+      gap: 10px;
+
+      padding: 10px;
+      border-radius: 8px;
+      color: #fff;
+      background: rgba(0, 0, 0, 0.55);
+    }
+
+    #opacity {
+      flex: 1;
+    }
+  </style>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+        "mindar-image-three": "https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js"
+      }
+    }
+  </script>
+</head>
+
+<body>
+  <div id="status">点击“启动AR”，然后对准识别牌</div>
+
+  <div id="opacity-panel">
+    <span>透明度</span>
+    <input
+      id="opacity"
+      type="range"
+      min="0.1"
+      max="1"
+      step="0.05"
+      value="0.65"
+    />
+  </div>
+
+  <div id="controls">
+    <button id="start-button">启动AR</button>
+    <button id="show-button">隐藏模型</button>
+    <button id="reset-button">重新识别</button>
+    <button id="stop-button">关闭AR</button>
+  </div>
+
+  <div id="ar-container"></div>
+
+  <script type="module">
+    import * as THREE from "three";
+    import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+    import { MindARThree } from "mindar-image-three";
+
+    const container = document.querySelector("#ar-container");
+    const statusText = document.querySelector("#status");
+
+    const startButton = document.querySelector("#start-button");
+    const stopButton = document.querySelector("#stop-button");
+    const showButton = document.querySelector("#show-button");
+    const resetButton = document.querySelector("#reset-button");
+    const opacitySlider = document.querySelector("#opacity");
+
+    const mindarThree = new MindARThree({
+      container: container,
+
+      // 识别图编译文件
+      imageTargetSrc: "./assets/targets.mind",
+
+      // 跟踪平滑参数
+      filterMinCF: 0.001,
+      filterBeta: 0.01,
+
+      // 短暂丢失图像后继续保持
+      missTolerance: 10,
+      warmupTolerance: 5
+    });
+
+    const { renderer, scene, camera } = mindarThree;
+
+    // targets.mind中第一个识别图，对应编号0
+    const anchor = mindarThree.addAnchor(0);
+
+    let model = null;
+    let arStarted = false;
+    let modelVisible = true;
+
+    /*
+      所有位置参数均相对于识别图。
+
+      MindAR将识别图宽度视为约1个单位。
+      例如实体识别图宽度是0.8米：
+      1 AR单位约等于0.8米。
+
+      后续现场标定主要修改：
+      MODEL_POSITION
+      MODEL_ROTATION
+      MODEL_SCALE
+    */
+
+    const MODEL_POSITION = {
+      x: 0,
+      y: 0,
+      z: 0
+    };
+
+    const MODEL_ROTATION = {
+      x: 0,
+      y: 0,
+      z: 0
+    };
+
+    const MODEL_SCALE = {
+      x: 0.5,
+      y: 0.5,
+      z: 0.5
+    };
+
+    // 增加环境光
+    const ambientLight = new THREE.AmbientLight(0xffffff, 2);
+    scene.add(ambientLight);
+
+    // 增加方向光
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 2);
+    directionalLight.position.set(1, 2, 1);
+    scene.add(directionalLight);
+
+    const loader = new GLTFLoader();
+
+    loader.load(
+      "./assets/model.glb",
+
+      (gltf) => {
+        model = gltf.scene;
+
+        model.position.set(
+          MODEL_POSITION.x,
+          MODEL_POSITION.y,
+          MODEL_POSITION.z
+        );
+
+        model.rotation.set(
+          MODEL_ROTATION.x,
+          MODEL_ROTATION.y,
+          MODEL_ROTATION.z
+        );
+
+        model.scale.set(
+          MODEL_SCALE.x,
+          MODEL_SCALE.y,
+          MODEL_SCALE.z
+        );
+
+        setModelOpacity(Number(opacitySlider.value));
+
+        anchor.group.add(model);
+
+        statusText.textContent = "模型已加载，请启动AR";
+      },
+
+      (event) => {
+        if (event.total > 0) {
+          const progress = Math.round(
+            (event.loaded / event.total) * 100
+          );
+
+          statusText.textContent = `模型加载中：${progress}%`;
+        }
+      },
+
+      (error) => {
+        console.error("模型加载失败：", error);
+        statusText.textContent = "模型加载失败，请检查model.glb";
+      }
+    );
+
+    function setModelOpacity(value) {
+      if (!model) return;
+
+      model.traverse((object) => {
+        if (!object.isMesh || !object.material) return;
+
+        const materials = Array.isArray(object.material)
+          ? object.material
+          : [object.material];
+
+        materials.forEach((material) => {
+          material.transparent = value < 1;
+          material.opacity = value;
+          material.depthWrite = value >= 1;
+          material.needsUpdate = true;
+        });
+      });
+    }
+
+    anchor.onTargetFound = () => {
+      statusText.textContent = "识别成功，模型已定位";
+    };
+
+    anchor.onTargetLost = () => {
+      statusText.textContent = "识别牌丢失，请重新对准";
+    };
+
+    async function startAR() {
+      if (arStarted) return;
+
+      try {
+        statusText.textContent = "正在启动摄像头……";
+
+        await mindarThree.start();
+
+        renderer.setAnimationLoop(() => {
+          renderer.render(scene, camera);
+        });
+
+        arStarted = true;
+        statusText.textContent = "请将摄像头对准识别牌";
+      } catch (error) {
+        console.error(error);
+        statusText.textContent =
+          "AR启动失败，请检查摄像头权限和HTTPS";
+      }
+    }
+
+    function stopAR() {
+      if (!arStarted) return;
+
+      mindarThree.stop();
+      renderer.setAnimationLoop(null);
+
+      arStarted = false;
+      statusText.textContent = "AR已关闭";
+    }
+
+    startButton.addEventListener("click", startAR);
+    stopButton.addEventListener("click", stopAR);
+
+    showButton.addEventListener("click", () => {
+      if (!model) return;
+
+      modelVisible = !modelVisible;
+      model.visible = modelVisible;
+
+      showButton.textContent = modelVisible
+        ? "隐藏模型"
+        : "显示模型";
+    });
+
+    resetButton.addEventListener("click", async () => {
+      stopAR();
+
+      await new Promise((resolve) => {
+        setTimeout(resolve, 300);
+      });
+
+      startAR();
+    });
+
+    opacitySlider.addEventListener("input", (event) => {
+      setModelOpacity(Number(event.target.value));
+    });
+
+    window.addEventListener("beforeunload", () => {
+      if (arStarted) {
+        mindarThree.stop();
+      }
+    });
+  </script>
+</body>
+</html>
